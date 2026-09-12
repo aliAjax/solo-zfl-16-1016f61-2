@@ -56,6 +56,41 @@ button.primary {
   border-color: var(--ink);
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  transform: none;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(54, 95, 125, 0.12);
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+button:disabled .history-count {
+  background: rgba(111, 103, 92, 0.14);
+  color: var(--muted);
+}
+
 input,
 select {
   min-width: 0;
@@ -419,6 +454,10 @@ h3 {
 
   .top-actions button {
     flex: 1;
+  }
+
+  .history-actions {
+    flex: 1 1 100%;
   }
 
   .type-form {

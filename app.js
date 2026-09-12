@@ -1,4 +1,6 @@
 const storageKey = "zfl16-movable-type-workshop";
+const historyKey = `${storageKey}-history`;
+const HISTORY_LIMIT = 50;
 
 const starterInventory = [
   { id: crypto.randomUUID(), char: "山", style: "宋体旧字", size: 30, quantity: 4, wear: "微磨" },
@@ -23,6 +25,8 @@ const defaultState = {
 };
 
 let state = loadState();
+let historyState = loadHistory();
+let lastGridInputAt = 0;
 
 const els = {
   paperSize: document.querySelector("#paperSize"),
@@ -47,7 +51,11 @@ const els = {
   inventoryCount: document.querySelector("#inventoryCount"),
   saveDraftBtn: document.querySelector("#saveDraftBtn"),
   exportBtn: document.querySelector("#exportBtn"),
-  clearBoardBtn: document.querySelector("#clearBoardBtn")
+  clearBoardBtn: document.querySelector("#clearBoardBtn"),
+  undoBtn: document.querySelector("#undoBtn"),
+  redoBtn: document.querySelector("#redoBtn"),
+  undoCount: document.querySelector("#undoCount"),
+  redoCount: document.querySelector("#redoCount")
 };
 
 function loadState() {
@@ -67,6 +75,94 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(state));
+}
+
+function takeSnapshot() {
+  return structuredClone({
+    inventory: state.inventory,
+    selectedTypeId: state.selectedTypeId,
+    placements: state.placements,
+    settings: {
+      paperSize: state.settings.paperSize,
+      flowMode: state.settings.flowMode,
+      gridGap: state.settings.gridGap
+    }
+  });
+}
+
+function applySnapshot(snapshot) {
+  state.inventory = structuredClone(snapshot.inventory);
+  state.selectedTypeId = snapshot.selectedTypeId;
+  state.placements = structuredClone(snapshot.placements);
+  state.settings.paperSize = snapshot.settings.paperSize;
+  state.settings.flowMode = snapshot.settings.flowMode;
+  state.settings.gridGap = snapshot.settings.gridGap;
+}
+
+function isValidSnapshot(snapshot) {
+  return Boolean(
+    snapshot &&
+      Array.isArray(snapshot.inventory) &&
+      Array.isArray(snapshot.placements) &&
+      snapshot.settings &&
+      typeof snapshot.settings === "object"
+  );
+}
+
+function loadHistory() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(historyKey));
+    if (parsed && Array.isArray(parsed.undo) && Array.isArray(parsed.redo)) {
+      return {
+        undo: parsed.undo.filter(isValidSnapshot).slice(-HISTORY_LIMIT),
+        redo: parsed.redo.filter(isValidSnapshot).slice(-HISTORY_LIMIT)
+      };
+    }
+  } catch {
+    // 历史记录损坏时回退为空
+  }
+  return { undo: [], redo: [] };
+}
+
+function saveHistory() {
+  try {
+    localStorage.setItem(historyKey, JSON.stringify(historyState));
+  } catch {
+    // 存储空间不足时裁掉最旧的一半再试一次
+    historyState.undo = historyState.undo.slice(-Math.floor(HISTORY_LIMIT / 2));
+    historyState.redo = historyState.redo.slice(-Math.floor(HISTORY_LIMIT / 2));
+    try {
+      localStorage.setItem(historyKey, JSON.stringify(historyState));
+    } catch {
+      // 仍然失败则放弃本次持久化，不影响当前操作
+    }
+  }
+}
+
+function pushHistory() {
+  historyState.undo.push(takeSnapshot());
+  if (historyState.undo.length > HISTORY_LIMIT) historyState.undo.shift();
+  historyState.redo = [];
+  lastGridInputAt = 0;
+  saveHistory();
+}
+
+function undo() {
+  if (!historyState.undo.length) return;
+  historyState.redo.push(takeSnapshot());
+  applySnapshot(historyState.undo.pop());
+  lastGridInputAt = 0;
+  saveHistory();
+  renderAll();
+}
+
+function redo() {
+  if (!historyState.redo.length) return;
+  historyState.undo.push(takeSnapshot());
+  applySnapshot(historyState.redo.pop());
+  lastGridInputAt = 0;
+  saveHistory();
+  renderAll();
 }
 
 function getGrid() {
@@ -204,6 +300,13 @@ function renderDrafts() {
       .join("") || `<p class="empty">还没有保存草稿。</p>`;
 }
 
+function renderHistoryControls() {
+  els.undoBtn.disabled = historyState.undo.length === 0;
+  els.redoBtn.disabled = historyState.redo.length === 0;
+  els.undoCount.textContent = historyState.undo.length;
+  els.redoCount.textContent = historyState.redo.length;
+}
+
 function renderAll() {
   saveState();
   renderSettings();
@@ -212,10 +315,12 @@ function renderAll() {
   renderStage();
   renderUsage();
   renderDrafts();
+  renderHistoryControls();
 }
 
 function placeType(row, col, typeId = state.selectedTypeId) {
   if (!typeId) return;
+  pushHistory();
   const existingIndex = state.placements.findIndex((item) => item.row === row && item.col === col);
   if (existingIndex >= 0) {
     if (state.placements[existingIndex].typeId === typeId) {
@@ -240,6 +345,7 @@ function addType(event) {
     wear: els.wearInput.value
   };
   if (!item.char || !item.style) return;
+  pushHistory();
   state.inventory.unshift(item);
   state.selectedTypeId = item.id;
   els.typeForm.reset();
@@ -309,7 +415,15 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function isTextEditingTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.tagName === "TEXTAREA") return true;
+  if (target.tagName !== "INPUT") return false;
+  return ["text", "search", "number", "password", "email", "url", "tel"].includes(target.type);
+}
+
 els.paperSize.addEventListener("change", () => {
+  pushHistory();
   state.settings.paperSize = els.paperSize.value;
   const { cols, rows } = getGrid();
   state.placements = state.placements.filter((item) => item.row < rows && item.col < cols);
@@ -317,11 +431,16 @@ els.paperSize.addEventListener("change", () => {
 });
 
 els.flowMode.addEventListener("change", () => {
+  pushHistory();
   state.settings.flowMode = els.flowMode.value;
   renderAll();
 });
 
 els.gridGap.addEventListener("input", () => {
+  // 拖动滑杆会连续触发 input，800ms 内的连续调整合并为一条历史
+  const now = Date.now();
+  if (now - lastGridInputAt > 800) pushHistory();
+  lastGridInputAt = now;
   state.settings.gridGap = Number(els.gridGap.value);
   renderAll();
 });
@@ -337,6 +456,8 @@ els.styleFilter.addEventListener("change", renderInventory);
 els.saveDraftBtn.addEventListener("click", saveDraft);
 els.exportBtn.addEventListener("click", exportPreview);
 els.clearBoardBtn.addEventListener("click", () => {
+  if (!state.placements.length) return;
+  pushHistory();
   state.placements = [];
   renderAll();
 });
@@ -345,6 +466,7 @@ els.typeList.addEventListener("click", (event) => {
   const deleteButton = event.target.closest("[data-delete-type]");
   if (deleteButton) {
     const typeId = deleteButton.dataset.deleteType;
+    pushHistory();
     state.inventory = state.inventory.filter((item) => item.id !== typeId);
     state.placements = state.placements.filter((item) => item.typeId !== typeId);
     if (state.selectedTypeId === typeId) state.selectedTypeId = state.inventory[0]?.id || null;
@@ -386,6 +508,7 @@ els.draftList.addEventListener("click", (event) => {
   if (loadButton) {
     const draft = state.drafts.find((item) => item.id === loadButton.dataset.loadDraft);
     if (!draft) return;
+    pushHistory();
     state.settings = structuredClone(draft.settings);
     state.placements = structuredClone(draft.placements);
     renderAll();
@@ -393,6 +516,24 @@ els.draftList.addEventListener("click", (event) => {
   if (deleteButton) {
     state.drafts = state.drafts.filter((item) => item.id !== deleteButton.dataset.deleteDraft);
     renderAll();
+  }
+});
+
+els.undoBtn.addEventListener("click", undo);
+els.redoBtn.addEventListener("click", redo);
+
+document.addEventListener("keydown", (event) => {
+  // 文本输入中保留浏览器原生撤销，不劫持快捷键
+  if (isTextEditingTarget(event.target)) return;
+  const mod = event.ctrlKey || event.metaKey;
+  if (!mod || event.altKey) return;
+  const key = event.key.toLowerCase();
+  if (key === "z" && !event.shiftKey) {
+    event.preventDefault();
+    undo();
+  } else if ((key === "z" && event.shiftKey) || key === "y") {
+    event.preventDefault();
+    redo();
   }
 });
 
