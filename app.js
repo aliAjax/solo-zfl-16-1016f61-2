@@ -85,18 +85,23 @@ function takeSnapshot() {
     settings: {
       paperSize: state.settings.paperSize,
       flowMode: state.settings.flowMode,
-      gridGap: state.settings.gridGap
+      gridGap: state.settings.gridGap,
+      workTitle: state.settings.workTitle
     }
   });
 }
 
-function applySnapshot(snapshot) {
+function applySnapshot(snapshot, withTitle) {
   state.inventory = structuredClone(snapshot.inventory);
   state.selectedTypeId = snapshot.selectedTypeId;
   state.placements = structuredClone(snapshot.placements);
   state.settings.paperSize = snapshot.settings.paperSize;
   state.settings.flowMode = snapshot.settings.flowMode;
   state.settings.gridGap = snapshot.settings.gridGap;
+  // 只有草稿载入产生的历史才还原作品名，避免撤销落字等操作时误改正在编辑的标题
+  if (withTitle && typeof snapshot.settings.workTitle === "string") {
+    state.settings.workTitle = snapshot.settings.workTitle;
+  }
 }
 
 function isValidSnapshot(snapshot) {
@@ -109,13 +114,24 @@ function isValidSnapshot(snapshot) {
   );
 }
 
+function normalizeHistoryEntry(entry) {
+  if (entry && isValidSnapshot(entry.snapshot)) {
+    return { snapshot: entry.snapshot, withTitle: Boolean(entry.withTitle) };
+  }
+  if (isValidSnapshot(entry)) {
+    // 兼容上一版直接保存快照的历史格式（不含作品名）
+    return { snapshot: entry, withTitle: false };
+  }
+  return null;
+}
+
 function loadHistory() {
   try {
     const parsed = JSON.parse(localStorage.getItem(historyKey));
     if (parsed && Array.isArray(parsed.undo) && Array.isArray(parsed.redo)) {
       return {
-        undo: parsed.undo.filter(isValidSnapshot).slice(-HISTORY_LIMIT),
-        redo: parsed.redo.filter(isValidSnapshot).slice(-HISTORY_LIMIT)
+        undo: parsed.undo.map(normalizeHistoryEntry).filter(Boolean).slice(-HISTORY_LIMIT),
+        redo: parsed.redo.map(normalizeHistoryEntry).filter(Boolean).slice(-HISTORY_LIMIT)
       };
     }
   } catch {
@@ -139,8 +155,8 @@ function saveHistory() {
   }
 }
 
-function pushHistory() {
-  historyState.undo.push(takeSnapshot());
+function pushHistory(withTitle = false) {
+  historyState.undo.push({ snapshot: takeSnapshot(), withTitle });
   if (historyState.undo.length > HISTORY_LIMIT) historyState.undo.shift();
   historyState.redo = [];
   lastGridInputAt = 0;
@@ -149,8 +165,9 @@ function pushHistory() {
 
 function undo() {
   if (!historyState.undo.length) return;
-  historyState.redo.push(takeSnapshot());
-  applySnapshot(historyState.undo.pop());
+  const entry = historyState.undo.pop();
+  historyState.redo.push({ snapshot: takeSnapshot(), withTitle: entry.withTitle });
+  applySnapshot(entry.snapshot, entry.withTitle);
   lastGridInputAt = 0;
   saveHistory();
   renderAll();
@@ -158,8 +175,9 @@ function undo() {
 
 function redo() {
   if (!historyState.redo.length) return;
-  historyState.undo.push(takeSnapshot());
-  applySnapshot(historyState.redo.pop());
+  const entry = historyState.redo.pop();
+  historyState.undo.push({ snapshot: takeSnapshot(), withTitle: entry.withTitle });
+  applySnapshot(entry.snapshot, entry.withTitle);
   lastGridInputAt = 0;
   saveHistory();
   renderAll();
@@ -508,7 +526,7 @@ els.draftList.addEventListener("click", (event) => {
   if (loadButton) {
     const draft = state.drafts.find((item) => item.id === loadButton.dataset.loadDraft);
     if (!draft) return;
-    pushHistory();
+    pushHistory(true);
     state.settings = structuredClone(draft.settings);
     state.placements = structuredClone(draft.placements);
     renderAll();
